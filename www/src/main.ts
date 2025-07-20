@@ -1,7 +1,7 @@
-import { Application, Text, Assets, Sprite } from "pixi.js";
+import { Application, Text, Assets, Sprite, Graphics } from "pixi.js";
 
 // Emojis for targets
-const EMOJIS = ['😀','🐶','🍕','🚗','👻','🎩','🥑','🍄','🦄','⚽','🤖'];
+const EMOJIS = ['😀','🐶','🍕','🚗','👻','🎩','🥑','🍄','🦄','⚽','🤖','🎯','🎪','🎨','🎭','🎬','🎵','🎸','🎹','🎲','🎳','🎮','🎰','🚀','🛸','🚁','🚂','🚢','✈️','🚙','🏎️','🚲','🛵','🏠','🏢','🏰','🗽','🌟','⭐','🌙','☀️','🌈','🔥','💎','💰','💡','🔔','🎁','🎈','🎊','🎉','🧸','🎀','🍎','🍌','🍇','🍓','🍒','🍑','🥝','🍍','🥭','🍊','🍋','🥥','🥨','🍔','🌭','🍟','🍗','🥓','🍳','🥞','🧇','🥯','🍞','🥖','🧀','🥪','🌮','🌯','🥙','🍲','🍱','🍣','🍤','🍝','🍜','🍛','🍚','🍘','🥟','🍡','🍧','🍨','🍦','🥧','🍰','🎂','🍮','🍭','🍬','🍫','🍿','🧊'];
 
 // Leaderboard functionality
 interface LeaderboardEntry {
@@ -94,10 +94,12 @@ interface Projectile {
     const skrawTexture = await Assets.load('/assets/img/skraw.png');
     const shpitballTexture = await Assets.load('/assets/img/shpitball.png');
     const logoTexture = await Assets.load('/assets/img/logo.png');
+    const uWinzTexture = await Assets.load('/assets/img/u_winz.png');
+    const uLooseTexture = await Assets.load('/assets/img/u_loose.png');
 
     let freds = pickFreds();
     let score = 0;
-    let currentTarget: Target | null = null;
+    let targets: Target[] = []; // Changed from single target to array
     let projectiles: Projectile[] = [];
     let gameRunning = false; // Start with intro screen
     let gameStarted = false;
@@ -106,11 +108,73 @@ interface Projectile {
     let gameStartTime = Date.now();
     let gameWon = false;
     let gameLost = false;
-    const TARGET_LIFETIME = 2000; // 2 seconds in milliseconds
-    const SPAWN_DELAY = 500; // 0.5 seconds between targets
+    let hits = 0;
+    let misses = 0;
+    let fredHits = 0;
+    let scapes = 0;
+    const TARGET_LIFETIME_MIN = 1200; // Minimum time a target stays (hard mode) - made more challenging
+    const TARGET_LIFETIME_MAX = 4000; // Maximum time a target stays (easy mode)
+    const SPAWN_DELAY_MIN = 300; // Minimum delay between spawns (hard mode) - made more aggressive
+    const SPAWN_DELAY_MAX = 1200; // Maximum delay between spawns (easy mode)
     const PROJECTILE_SPEED = 20; // Much faster projectiles
-    const WIN_SCORE = 20;
+    const WIN_SCORE = 69;
     const LONG_SHOT_THRESHOLD = 2/3; // 2/3 of screen height for bonus points
+    const DIFFICULTY_RAMP_TARGETS = 75; // How many targets to reach max difficulty - faster ramp than before
+    const MAX_SIMULTANEOUS_TARGETS = 5; // Increased maximum targets on screen at once
+
+    // Difficulty scaling functions
+    function getDifficultyRatio(): number {
+        return Math.min(1, targetsSpawned / DIFFICULTY_RAMP_TARGETS);
+    }
+
+    function getCurrentTargetLifetime(): number {
+        const ratio = getDifficultyRatio();
+        return TARGET_LIFETIME_MAX - (TARGET_LIFETIME_MAX - TARGET_LIFETIME_MIN) * ratio;
+    }
+
+    function getCurrentSpawnDelay(): number {
+        const ratio = getDifficultyRatio();
+        return SPAWN_DELAY_MAX - (SPAWN_DELAY_MAX - SPAWN_DELAY_MIN) * ratio;
+    }
+
+    function getMaxTargetsForDifficulty(): number {
+        const ratio = getDifficultyRatio();
+        // Start with 2 targets minimum, scale up to MAX_SIMULTANEOUS_TARGETS
+        return Math.floor(2 + (MAX_SIMULTANEOUS_TARGETS - 2) * ratio);
+    }
+
+    function getFredSpawnProbability(): number {
+        const ratio = getDifficultyRatio();
+        // Start with base FRED probability (3/95+ emojis ≈ 3%), scale up to 35% chance
+        const baseProbability = freds.length / EMOJIS.length;
+        const maxProbability = 0.35; // 35% chance at max difficulty - increased from 25%
+        return baseProbability + (maxProbability - baseProbability) * ratio;
+    }
+
+    function showRedPulse() {
+        // Create a red overlay for the pulse effect
+        const redOverlay = new Graphics();
+        redOverlay.rect(0, 0, app.screen.width, app.screen.height);
+        redOverlay.fill(0xff0000); // Red color
+        redOverlay.alpha = 0.3; // Semi-transparent
+        app.stage.addChild(redOverlay);
+
+        // Animate the pulse effect
+        let pulseAlpha = 0.3;
+        const pulseFade = () => {
+            pulseAlpha -= 0.02; // Fade out quickly
+            redOverlay.alpha = pulseAlpha;
+            
+            if (pulseAlpha <= 0) {
+                // Remove the overlay when fade is complete
+                if (redOverlay.parent) {
+                    app.stage.removeChild(redOverlay);
+                }
+                app.ticker.remove(pulseFade);
+            }
+        };
+        app.ticker.add(pulseFade);
+    }
 
     function showIntroScreen() {
         // Create logo - positioned in top third
@@ -129,8 +193,7 @@ Da rachets hav taken over da neighborhood!
 But don't worry - you got FREDS!
 SHPWAT all da rachets but NOT yer FRED!
 
-Today's FRED friends are: ${freds.join(' ')}
-(dey glow red so u know dey yer friends!)`,
+Today's FRED: ${freds.join(' ')}`,
             style: {
                 fontSize: 18,
                 fill: '#ffffff',
@@ -150,14 +213,15 @@ Today's FRED friends are: ${freds.join(' ')}
             text: `RULES OF DA SHPWAT:
 • Hit rachets = +1 point
 • Long shots (upper screen) = +2 points  
-• Hit FRED friend = -1 point (DON'T HURT YER FRIENDS!)
+• Hit FRED = -5 points (DON'T HURT FRED!)
 • Miss completely = -1 point
 • Score goes negative = U LOSE
-• Reach 20 points = U WIN (faster = bonus!)
+• Reach 69 points = U WIN (faster = bonus!)
+• Game gets HARDER as u progress!
 
 Move mouse to aim yer skraw
 Click to fire shpitballs straight up
-Work wit yer FRED friends to clear da rachets!`,
+Work wit yer FRED to clear da rachet!`,
             style: {
                 fontSize: 14,
                 fill: '#dddddd',
@@ -237,9 +301,10 @@ Work wit yer FRED friends to clear da rachets!`,
             updateScoreDisplay();
             updateFredText();
             
+            // Start spawning targets
             setTimeout(() => {
                 if (gameRunning) {
-                    spawnSingleTarget();
+                    spawnTargets();
                 }
             }, 1000);
             
@@ -265,40 +330,60 @@ Work wit yer FRED friends to clear da rachets!`,
             const clickX = e.clientX - rect.left;
             const clickY = e.clientY - rect.top;
             
-            // Check if click is on start button
-            const startBounds = startText.getBounds();
-            if (clickX >= startBounds.x && clickX <= startBounds.x + startBounds.width &&
-                clickY >= startBounds.y && clickY <= startBounds.y + startBounds.height) {
-                startGame();
-                return;
-            }
-            
-            // Check if click is on leaderboard button
+            // Check if click is on leaderboard button - if so, show leaderboard
             const leaderboardBounds = leaderboardButton.getBounds();
             if (clickX >= leaderboardBounds.x && clickX <= leaderboardBounds.x + leaderboardBounds.width &&
                 clickY >= leaderboardBounds.y && clickY <= leaderboardBounds.y + leaderboardBounds.height) {
                 showLeaderboardFromIntro();
                 return;
             }
+            
+            // Any other click starts the game
+            startGame();
         };
 
         app.canvas.addEventListener('pointerdown', handleIntroClick);
     }
 
-    function spawnSingleTarget() {
-        // Remove current target if it exists
-        if (currentTarget) {
-            app.stage.removeChild(currentTarget.sprite);
-            currentTarget = null;
-        }
-        
+    function spawnTargets() {
         if (!gameRunning) return;
         
-        // Just increment counter (no more FRED refreshing during game)
+        const maxTargets = getMaxTargetsForDifficulty();
+        
+        // Always spawn at least one target if we're below max
+        if (targets.length < maxTargets) {
+            spawnSingleTarget();
+        }
+        
+        // Schedule next spawn check - guaranteed spawn every second at most
+        setTimeout(() => {
+            if (gameRunning) {
+                spawnTargets();
+            }
+        }, getCurrentSpawnDelay());
+    }
+
+    function spawnSingleTarget() {
+        if (!gameRunning) return;
+        
+        // Just increment counter
         targetsSpawned++;
         
+        // Determine if this should be a FRED based on increasing probability
+        const fredProbability = getFredSpawnProbability();
+        const shouldBeFred = Math.random() < fredProbability;
+        
         // Create a new target
-        const emoji = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
+        let emoji: string;
+        if (shouldBeFred) {
+            // Pick a random FRED
+            emoji = freds[Math.floor(Math.random() * freds.length)];
+        } else {
+            // Pick a random non-FRED emoji
+            const nonFredEmojis = EMOJIS.filter(e => !freds.includes(e));
+            emoji = nonFredEmojis[Math.floor(Math.random() * nonFredEmojis.length)];
+        }
+        
         const x = Math.random() * (app.screen.width - 120) + 60;
         const y = Math.random() * (app.screen.height - 350) + 60; // Keep targets at least 100px above skraw
         
@@ -316,52 +401,47 @@ Work wit yer FRED friends to clear da rachets!`,
         sprite.interactive = true;
         sprite.cursor = 'pointer';
         
-        // Mark FREDS with a red glow
+        // Check if it's a FRED
         const isFred = freds.includes(emoji);
-        if (isFred) {
-            sprite.style.dropShadow = {
-                alpha: 1,
-                angle: 0,
-                blur: 4,
-                color: '#ff0000',
-                distance: 0
-            };
-        }
         
         app.stage.addChild(sprite);
-        currentTarget = { 
+        const target: Target = { 
             sprite, 
             fred: isFred, 
-            timeLeft: TARGET_LIFETIME,
-            maxTime: TARGET_LIFETIME
+            timeLeft: getCurrentTargetLifetime(),
+            maxTime: getCurrentTargetLifetime()
         };
+        
+        targets.push(target);
     }
 
-    function updateTarget(deltaTime: number) {
-        if (!currentTarget) return;
-        
-        // Update timer
-        currentTarget.timeLeft -= deltaTime;
-        
-        // Fade out effect as time runs out
-        const fadeRatio = currentTarget.timeLeft / currentTarget.maxTime;
-        currentTarget.sprite.alpha = Math.max(0.3, fadeRatio);
-        
-        // Scale effect to show urgency
-        const scaleEffect = 1 + (1 - fadeRatio) * 0.2;
-        currentTarget.sprite.scale.set(scaleEffect);
-        
-        // Remove target if time is up
-        if (currentTarget.timeLeft <= 0) {
-            app.stage.removeChild(currentTarget.sprite);
-            currentTarget = null;
+    function updateTargets(deltaTime: number) {
+        for (let i = targets.length - 1; i >= 0; i--) {
+            const target = targets[i];
             
-            // Spawn next target after delay
-            setTimeout(() => {
-                if (gameRunning) {
-                    spawnSingleTarget();
+            // Update timer
+            target.timeLeft -= deltaTime;
+            
+            // Fade out effect as time runs out
+            const fadeRatio = target.timeLeft / target.maxTime;
+            target.sprite.alpha = Math.max(0.3, fadeRatio);
+            
+            // Scale effect to show urgency
+            const scaleEffect = 1 + (1 - fadeRatio) * 0.2;
+            target.sprite.scale.set(scaleEffect);
+            
+            // Remove target if time is up
+            if (target.timeLeft <= 0) {
+                // Only count as scape and lose points if it's an enemy (not a FRED)
+                if (!target.fred) {
+                    scapes++;
+                    score -= 1; // Lose point for letting enemy escape
+                    updateScoreDisplay();
+                    checkGameState();
                 }
-            }, SPAWN_DELAY);
+                app.stage.removeChild(target.sprite);
+                targets.splice(i, 1);
+            }
         }
     }
 
@@ -402,21 +482,26 @@ Work wit yer FRED friends to clear da rachets!`,
             proj.sprite.x += proj.vx;
             proj.sprite.y += proj.vy;
             
-            // Check collision with current target
-            if (currentTarget) {
-                const dx = proj.sprite.x - currentTarget.sprite.x;
-                const dy = proj.sprite.y - currentTarget.sprite.y;
+            // Check collision with any target
+            let hit = false;
+            for (let j = targets.length - 1; j >= 0; j--) {
+                const target = targets[j];
+                const dx = proj.sprite.x - target.sprite.x;
+                const dy = proj.sprite.y - target.sprite.y;
                 
                 if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
                     // Hit!
                     let pointsEarned = 0;
                     
-                    if (currentTarget.fred) {
-                        pointsEarned = -1; // Penalty for hitting a FRED
+                    if (target.fred) {
+                        pointsEarned = -5; // Heavy penalty for hitting a FRED
+                        fredHits++;
+                        showRedPulse(); // Show red pulse effect for FRED hit
                     } else {
+                        hits++;
                         // Check if it's a long shot (target in upper 2/3 of screen)
                         const longShotLine = app.screen.height * LONG_SHOT_THRESHOLD;
-                        if (currentTarget.sprite.y < longShotLine) {
+                        if (target.sprite.y < longShotLine) {
                             pointsEarned = 2; // Bonus points for long shots
                         } else {
                             pointsEarned = 1; // Regular points
@@ -426,30 +511,25 @@ Work wit yer FRED friends to clear da rachets!`,
                     score += pointsEarned;
                     
                     // Remove target and projectile
-                    app.stage.removeChild(currentTarget.sprite);
+                    app.stage.removeChild(target.sprite);
                     app.stage.removeChild(proj.sprite);
-                    currentTarget = null;
+                    targets.splice(j, 1);
                     projectiles.splice(i, 1);
                     
                     updateScoreDisplay();
                     checkGameState();
                     
-                    if (gameRunning) {
-                        // Spawn next target after delay
-                        setTimeout(() => {
-                            if (gameRunning) {
-                                spawnSingleTarget();
-                            }
-                        }, SPAWN_DELAY);
-                    }
-                    
-                    continue;
+                    hit = true;
+                    break;
                 }
             }
+            
+            if (hit) continue;
             
             // Check if projectile missed (exited top of screen)
             if (proj.sprite.y < -50) {
                 score -= 1; // Penalty for missing
+                misses++;
                 app.stage.removeChild(proj.sprite);
                 projectiles.splice(i, 1);
                 updateScoreDisplay();
@@ -492,11 +572,13 @@ Work wit yer FRED friends to clear da rachets!`,
     }
 
     function showGameOver(won: boolean) {
-        // Remove current target if exists
-        if (currentTarget) {
-            app.stage.removeChild(currentTarget.sprite);
-            currentTarget = null;
-        }
+        // Remove all targets
+        targets.forEach(target => {
+            if (target.sprite.parent) {
+                app.stage.removeChild(target.sprite);
+            }
+        });
+        targets = [];
         
         // Clear all projectiles
         projectiles.forEach(proj => app.stage.removeChild(proj.sprite));
@@ -517,11 +599,19 @@ Work wit yer FRED friends to clear da rachets!`,
     }
 
     function showHighScoreEntry(finalScore: number, gameTime: number, timeBonus: number, rank: number) {
-        // High score notification
+        // Add win image at top with space
+        const winImage = new Sprite(uWinzTexture);
+        winImage.anchor.set(0.5);
+        winImage.x = app.screen.width / 2;
+        winImage.y = app.screen.height / 8; // Position higher up to give it dedicated space
+        winImage.scale.set(0.3); // Adjust size as needed
+        app.stage.addChild(winImage);
+
+        // High score notification - moved down to avoid overlap
         const congratsText = new Text({
             text: `NEW HIGH SCORE!\n#${rank} on the leaderboard!\n\nFinal Score: ${finalScore}\nTime: ${gameTime.toFixed(1)}s\nTime Bonus: +${timeBonus}`,
             style: {
-                fontSize: 28,
+                fontSize: 24,
                 fill: '#ffff44',
                 fontFamily: 'Comic Sans MS, cursive',
                 align: 'center'
@@ -529,8 +619,80 @@ Work wit yer FRED friends to clear da rachets!`,
         });
         congratsText.anchor.set(0.5);
         congratsText.x = app.screen.width / 2;
-        congratsText.y = app.screen.height / 3;
+        congratsText.y = app.screen.height / 3; // Moved further down to create more space from the image
         app.stage.addChild(congratsText);
+
+        // Create colored recap
+        const recapTitle = new Text({
+            text: 'RECAP:',
+            style: {
+                fontSize: 22,
+                fill: '#ffffff',
+                fontFamily: 'Comic Sans MS, cursive',
+                align: 'center',
+                fontWeight: 'bold'
+            }
+        });
+        recapTitle.anchor.set(0.5);
+        recapTitle.x = app.screen.width / 2;
+        recapTitle.y = app.screen.height / 3 + 120; // Adjusted to follow the moved congratulations text
+        app.stage.addChild(recapTitle);
+
+        const hitsText = new Text({
+            text: `Enemy Hits: ${hits}`,
+            style: {
+                fontSize: 22,
+                fill: '#44ff44', // Green for good hits
+                fontFamily: 'Comic Sans MS, cursive',
+                align: 'center'
+            }
+        });
+        hitsText.anchor.set(0.5);
+        hitsText.x = app.screen.width / 2;
+        hitsText.y = app.screen.height / 3 + 160; // Adjusted spacing
+        app.stage.addChild(hitsText);
+
+        const missesText = new Text({
+            text: `Misses: -${misses}`,
+            style: {
+                fontSize: 22,
+                fill: '#ff4444', // Red for bad misses
+                fontFamily: 'Comic Sans MS, cursive',
+                align: 'center'
+            }
+        });
+        missesText.anchor.set(0.5);
+        missesText.x = app.screen.width / 2;
+        missesText.y = app.screen.height / 3 + 190; // Adjusted spacing
+        app.stage.addChild(missesText);
+
+        const fredHitsText = new Text({
+            text: `FREDs Hit: -${fredHits}`,
+            style: {
+                fontSize: 22,
+                fill: '#ff4444', // Red for bad FRED hits
+                fontFamily: 'Comic Sans MS, cursive',
+                align: 'center'
+            }
+        });
+        fredHitsText.anchor.set(0.5);
+        fredHitsText.x = app.screen.width / 2;
+        fredHitsText.y = app.screen.height / 3 + 220; // Adjusted spacing
+        app.stage.addChild(fredHitsText);
+
+        const scapesText = new Text({
+            text: `Scapes: -${scapes}`,
+            style: {
+                fontSize: 22,
+                fill: '#ff4444', // Red for bad scapes
+                fontFamily: 'Comic Sans MS, cursive',
+                align: 'center'
+            }
+        });
+        scapesText.anchor.set(0.5);
+        scapesText.x = app.screen.width / 2;
+        scapesText.y = app.screen.height / 3 + 250; // Adjusted spacing
+        app.stage.addChild(scapesText);
 
         // Initials entry
         const enterInitialsText = new Text({
@@ -544,7 +706,7 @@ Work wit yer FRED friends to clear da rachets!`,
         });
         enterInitialsText.anchor.set(0.5);
         enterInitialsText.x = app.screen.width / 2;
-        enterInitialsText.y = app.screen.height / 2;
+        enterInitialsText.y = app.screen.height / 3 + 300; // Adjusted to follow the recap
         app.stage.addChild(enterInitialsText);
 
         // Initials display
@@ -561,7 +723,7 @@ Work wit yer FRED friends to clear da rachets!`,
         });
         initialsText.anchor.set(0.5);
         initialsText.x = app.screen.width / 2;
-        initialsText.y = app.screen.height / 2 + 40;
+        initialsText.y = app.screen.height / 3 + 340; // Adjusted spacing
         app.stage.addChild(initialsText);
 
         // Instructions
@@ -576,7 +738,7 @@ Work wit yer FRED friends to clear da rachets!`,
         });
         instructionsText.anchor.set(0.5);
         instructionsText.x = app.screen.width / 2;
-        instructionsText.y = app.screen.height / 2 + 80;
+        instructionsText.y = app.screen.height / 3 + 380; // Adjusted spacing
         app.stage.addChild(instructionsText);
 
         // Update initials display
@@ -601,7 +763,13 @@ Work wit yer FRED friends to clear da rachets!`,
                 addToLeaderboard(initials, finalScore, gameTime);
                 
                 // Remove input elements
+                app.stage.removeChild(winImage);
                 app.stage.removeChild(congratsText);
+                app.stage.removeChild(recapTitle);
+                app.stage.removeChild(hitsText);
+                app.stage.removeChild(missesText);
+                app.stage.removeChild(fredHitsText);
+                app.stage.removeChild(scapesText);
                 app.stage.removeChild(enterInitialsText);
                 app.stage.removeChild(initialsText);
                 app.stage.removeChild(instructionsText);
@@ -631,7 +799,7 @@ Work wit yer FRED friends to clear da rachets!`,
         const gameOverText = new Text({
             text: message,
             style: {
-                fontSize: 32,
+                fontSize: 24,
                 fill: color,
                 fontFamily: 'Comic Sans MS, cursive',
                 align: 'center'
@@ -640,8 +808,88 @@ Work wit yer FRED friends to clear da rachets!`,
         
         gameOverText.anchor.set(0.5);
         gameOverText.x = app.screen.width / 2;
-        gameOverText.y = app.screen.height / 3;
+        gameOverText.y = app.screen.height / 3; // Keep game over text in same position
         app.stage.addChild(gameOverText);
+
+        // Add appropriate image positioned at top with proper spacing
+        const resultImage = new Sprite(won ? uWinzTexture : uLooseTexture);
+        resultImage.anchor.set(0.5);
+        resultImage.x = app.screen.width / 2;
+        resultImage.y = app.screen.height / 8; // Position at top like win image for consistent spacing
+        resultImage.scale.set(0.3); // Adjust size as needed
+        app.stage.addChild(resultImage);
+
+        // Create colored recap
+        const recapTitle = new Text({
+            text: 'RECAP:',
+            style: {
+                fontSize: 24,
+                fill: '#ffffff',
+                fontFamily: 'Comic Sans MS, cursive',
+                align: 'center',
+                fontWeight: 'bold'
+            }
+        });
+        recapTitle.anchor.set(0.5);
+        recapTitle.x = app.screen.width / 2;
+        recapTitle.y = app.screen.height / 3 + 140;
+        app.stage.addChild(recapTitle);
+
+        const hitsText = new Text({
+            text: `Enemy Hits: ${hits}`,
+            style: {
+                fontSize: 24,
+                fill: '#44ff44', // Green for good hits
+                fontFamily: 'Comic Sans MS, cursive',
+                align: 'center'
+            }
+        });
+        hitsText.anchor.set(0.5);
+        hitsText.x = app.screen.width / 2;
+        hitsText.y = app.screen.height / 3 + 190;
+        app.stage.addChild(hitsText);
+
+        const missesText = new Text({
+            text: `Misses: -${misses}`,
+            style: {
+                fontSize: 24,
+                fill: '#ff4444', // Red for bad misses
+                fontFamily: 'Comic Sans MS, cursive',
+                align: 'center'
+            }
+        });
+        missesText.anchor.set(0.5);
+        missesText.x = app.screen.width / 2;
+        missesText.y = app.screen.height / 3 + 230;
+        app.stage.addChild(missesText);
+
+        const fredHitsText = new Text({
+            text: `FREDs Hit: -${fredHits}`,
+            style: {
+                fontSize: 24,
+                fill: '#ff4444', // Red for bad FRED hits
+                fontFamily: 'Comic Sans MS, cursive',
+                align: 'center'
+            }
+        });
+        fredHitsText.anchor.set(0.5);
+        fredHitsText.x = app.screen.width / 2;
+        fredHitsText.y = app.screen.height / 3 + 270;
+        app.stage.addChild(fredHitsText);
+
+        const scapesText = new Text({
+            text: `Scapes: -${scapes}`,
+            style: {
+                fontSize: 24,
+                fill: '#ff4444', // Red for bad scapes
+                fontFamily: 'Comic Sans MS, cursive',
+                align: 'center'
+            }
+        });
+        scapesText.anchor.set(0.5);
+        scapesText.x = app.screen.width / 2;
+        scapesText.y = app.screen.height / 3 + 310;
+        app.stage.addChild(scapesText);
 
         // Show leaderboard button
         const leaderboardText = new Text({
@@ -655,12 +903,18 @@ Work wit yer FRED friends to clear da rachets!`,
         });
         leaderboardText.anchor.set(0.5);
         leaderboardText.x = app.screen.width / 2;
-        leaderboardText.y = app.screen.height / 2 + 40;
+        leaderboardText.y = app.screen.height / 3 + 370;
         app.stage.addChild(leaderboardText);
 
         // Handle click to show leaderboard
         const showLeaderboardClick = () => {
+            app.stage.removeChild(resultImage);
             app.stage.removeChild(gameOverText);
+            app.stage.removeChild(recapTitle);
+            app.stage.removeChild(hitsText);
+            app.stage.removeChild(missesText);
+            app.stage.removeChild(fredHitsText);
+            app.stage.removeChild(scapesText);
             app.stage.removeChild(leaderboardText);
             app.canvas.removeEventListener('pointerdown', showLeaderboardClick);
             showLeaderboard();
@@ -797,19 +1051,24 @@ Work wit yer FRED friends to clear da rachets!`,
                 
                 // Reset game state and start immediately
                 score = 0;
+                hits = 0;
+                misses = 0;
+                fredHits = 0;
+                scapes = 0;
                 gameStartTime = Date.now();
                 gameWon = false;
                 gameLost = false;
                 gameRunning = true;
                 gameStarted = true;
                 targetsSpawned = 0;
+                targets = []; // Clear targets array
                 freds = pickFreds();
                 updateScoreDisplay();
                 updateFredText();
                 
                 setTimeout(() => {
                     if (gameRunning) {
-                        spawnSingleTarget();
+                        spawnTargets();
                     }
                 }, 1000);
                 
@@ -834,10 +1093,16 @@ Work wit yer FRED friends to clear da rachets!`,
                 gameStarted = false;
                 gameRunning = false;
                 score = 0;
+                hits = 0;
+                misses = 0;
+                fredHits = 0;
+                scapes = 0;
                 gameWon = false;
                 gameLost = false;
                 targetsSpawned = 0;
+                targets = []; // Clear targets array
                 freds = pickFreds();
+                updateFredText(); // Update the display to show new FREDs
                 
                 app.canvas.removeEventListener('pointerdown', handleLeaderboardClick);
                 showIntroScreen();
@@ -909,7 +1174,7 @@ Work wit yer FRED friends to clear da rachets!`,
     // Game loop
     app.ticker.add((time) => {
         if (gameStarted && gameRunning) {
-            updateTarget(time.deltaTime * 16.67); // Convert to milliseconds (assuming 60fps)
+            updateTargets(time.deltaTime * 16.67); // Convert to milliseconds (assuming 60fps)
             updateProjectiles();
         }
     });
