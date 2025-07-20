@@ -97,6 +97,53 @@ interface Projectile {
     const uWinzTexture = await Assets.load('/assets/img/u_winz.png');
     const uLooseTexture = await Assets.load('/assets/img/u_loose.png');
 
+    // Setup background music using HTML5 Audio
+    const bgMusic = new Audio('/assets/audio/born_to_drive.mp3');
+    bgMusic.loop = true;
+    bgMusic.volume = 0.3;
+    let musicEnabled = true; // Allow users to toggle music
+    
+    // Setup sound effects
+    const fireSound = new Audio('/assets/audio/bwoe.wav');
+    fireSound.volume = 0.5;
+    const hitSound = new Audio('/assets/audio/shpwat.wav');
+    hitSound.volume = 0.5;
+    
+    function playFireSound() {
+        if (musicEnabled) { // Use music toggle to control all audio
+            fireSound.currentTime = 0; // Reset to beginning for rapid fire
+            fireSound.play().catch(e => console.log('Fire sound play failed:', e));
+        }
+    }
+    
+    function playHitSound() {
+        if (musicEnabled) { // Use music toggle to control all audio
+            hitSound.currentTime = 0; // Reset to beginning for rapid hits
+            hitSound.play().catch(e => console.log('Hit sound play failed:', e));
+        }
+    }
+    
+    function startBackgroundMusic() {
+        if (musicEnabled) {
+            bgMusic.currentTime = 0; // Reset to beginning
+            bgMusic.play().catch(e => console.log('Audio play failed:', e));
+        }
+    }
+    
+    function stopBackgroundMusic() {
+        bgMusic.pause();
+        bgMusic.currentTime = 0; // Reset to beginning
+    }
+    
+    function toggleMusic() {
+        musicEnabled = !musicEnabled;
+        if (musicEnabled) {
+            startBackgroundMusic();
+        } else {
+            stopBackgroundMusic();
+        }
+    }
+
     let freds = pickFreds();
     let score = 0;
     let targets: Target[] = []; // Changed from single target to array
@@ -297,6 +344,9 @@ Work wit yer FRED to clear da rachet!`,
             gameRunning = true;
             gameStartTime = Date.now();
             
+            // Start background music
+            startBackgroundMusic();
+            
             // Initialize game elements
             updateScoreDisplay();
             updateFredText();
@@ -329,6 +379,11 @@ Work wit yer FRED to clear da rachet!`,
             const rect = app.canvas.getBoundingClientRect();
             const clickX = e.clientX - rect.left;
             const clickY = e.clientY - rect.top;
+            
+            // Check if click is on music button - if so, ignore (handled by PIXI event)
+            if (isClickOnMusicButton(clickX, clickY)) {
+                return;
+            }
             
             // Check if click is on leaderboard button - if so, show leaderboard
             const leaderboardBounds = leaderboardButton.getBounds();
@@ -459,6 +514,9 @@ Work wit yer FRED to clear da rachet!`,
     }
 
     function fireProjectile() {
+        // Play fire sound effect
+        playFireSound();
+        
         // Create projectile
         const projectile = new Sprite(shpitballTexture);
         projectile.anchor.set(0.5);
@@ -490,7 +548,9 @@ Work wit yer FRED to clear da rachet!`,
                 const dy = proj.sprite.y - target.sprite.y;
                 
                 if (Math.abs(dx) < 40 && Math.abs(dy) < 40) {
-                    // Hit!
+                    // Hit! Play hit sound effect
+                    playHitSound();
+                    
                     let pointsEarned = 0;
                     
                     if (target.fred) {
@@ -907,7 +967,16 @@ Work wit yer FRED to clear da rachet!`,
         app.stage.addChild(leaderboardText);
 
         // Handle click to show leaderboard
-        const showLeaderboardClick = () => {
+        const showLeaderboardClick = (e: PointerEvent) => {
+            const rect = app.canvas.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+            
+            // Check if click is on music button - if so, ignore
+            if (isClickOnMusicButton(clickX, clickY)) {
+                return;
+            }
+            
             app.stage.removeChild(resultImage);
             app.stage.removeChild(gameOverText);
             app.stage.removeChild(recapTitle);
@@ -1036,6 +1105,11 @@ Work wit yer FRED to clear da rachet!`,
             const clickX = e.clientX - rect.left;
             const clickY = e.clientY - rect.top;
             
+            // Check if click is on music button - if so, ignore (handled by PIXI event)
+            if (isClickOnMusicButton(clickX, clickY)) {
+                return;
+            }
+            
             // Check if click is on Play Again button
             const restartBounds = restartText.getBounds();
             if (clickX >= restartBounds.x && clickX <= restartBounds.x + restartBounds.width &&
@@ -1065,6 +1139,9 @@ Work wit yer FRED to clear da rachet!`,
                 freds = pickFreds();
                 updateScoreDisplay();
                 updateFredText();
+                
+                // Start background music
+                startBackgroundMusic();
                 
                 setTimeout(() => {
                     if (gameRunning) {
@@ -1143,6 +1220,41 @@ Work wit yer FRED to clear da rachet!`,
         fredText.text = 'FREDS: ' + freds.join(' ');
     }
 
+    // Create persistent music toggle button (always visible)
+    const persistentMusicButton = new Text({
+        text: musicEnabled ? '♪ ON' : '♪ OFF',
+        style: {
+            fontSize: 18,
+            fill: musicEnabled ? '#44ff44' : '#ff4444',
+            fontFamily: 'Comic Sans MS, cursive',
+            align: 'left'
+        }
+    });
+    persistentMusicButton.x = 15;
+    persistentMusicButton.y = app.screen.height - 30;
+    persistentMusicButton.interactive = true;
+    persistentMusicButton.cursor = 'pointer';
+    app.stage.addChild(persistentMusicButton);
+
+    function updatePersistentMusicButton() {
+        persistentMusicButton.text = musicEnabled ? '♪ ON' : '♪ OFF';
+        persistentMusicButton.style.fill = musicEnabled ? '#44ff44' : '#ff4444';
+    }
+
+    // Handle persistent music button clicks
+    persistentMusicButton.on('pointerdown', (e) => {
+        e.stopPropagation(); // Prevent other click handlers from firing
+        toggleMusic();
+        updatePersistentMusicButton();
+    });
+
+    // Helper function to check if click is on music button
+    function isClickOnMusicButton(clientX: number, clientY: number): boolean {
+        const musicBounds = persistentMusicButton.getBounds();
+        return clientX >= musicBounds.x && clientX <= musicBounds.x + musicBounds.width &&
+               clientY >= musicBounds.y && clientY <= musicBounds.y + musicBounds.height;
+    }
+
     // Handle mouse movement
     app.canvas.addEventListener('mousemove', (e) => {
         const rect = app.canvas.getBoundingClientRect();
@@ -1155,20 +1267,23 @@ Work wit yer FRED to clear da rachet!`,
         if (!gameRunning || !gameStarted) return; // Don't fire when game is over or not started
         
         const rect = app.canvas.getBoundingClientRect();
-        mouseX = e.clientX - rect.left;
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+        
+        // Check if click is on music button - if so, don't fire
+        if (isClickOnMusicButton(clickX, clickY)) {
+            return;
+        }
+        
+        mouseX = clickX;
         updateSkrawPosition();
         fireProjectile();
     });
 
-    // Handle window resize
+    // Handle window resize - reload page for proper scaling
     window.addEventListener('resize', () => {
-        skraw.y = app.screen.height - 50; // Keep skraw bottom off-screen
-        skraw.x = app.screen.width / 2;
-        mouseX = app.screen.width / 2;
-        scoreText.x = 15;
-        scoreText.y = 15;
-        fredText.x = 15;
-        fredText.y = 60;
+        // Reload the page to ensure proper scaling and layout
+        window.location.reload();
     });
 
     // Game loop
